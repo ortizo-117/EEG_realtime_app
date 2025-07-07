@@ -1,0 +1,10 @@
+
+=== ERROR DURING RUNTIME ===
+2025-07-02 12:30:40
+Traceback (most recent call last):
+  File "C:\Users\ortizo\Documents\brainflow_prj\experimental_cyton.py", line 28, in <module>
+    board.prepare_session()
+    ~~~~~~~~~~~~~~~~~~~~~^^
+  File "C:\Users\ortizo\Documents\brainflow_prj\venv\Lib\site-packages\brainflow\board_shim.py", line 1202, in prepare_session
+    raise BrainFlowError('unable to prepare streaming session', res)
+brainflow.exit_codes.BrainFlowError: UNABLE_TO_OPEN_PORT_ERROR:2 unable to prepare streaming session
