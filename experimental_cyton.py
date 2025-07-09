@@ -19,6 +19,13 @@ class Graph:
         self.window_size = 10
         self.num_points = self.window_size * self.sampling_rate
 
+        # buffer info
+        self.max_buffer_size = 15000  # 1 minute at 250 Hz
+        self.sample_timestamps = np.full(self.max_buffer_size, np.nan)
+        self.eeg_ring_buffer = np.full((len(self.exg_channels), self.max_buffer_size), np.nan)
+
+        self.global_sample_count = 0  # total number of samples since start
+
         self.app = QtWidgets.QApplication([])
         self.win = QtWidgets.QMainWindow()
         self.win.setWindowTitle('BrainFlow Real-Time EEG Viewer with Docks')
@@ -108,11 +115,12 @@ class Graph:
                 logging.warning("Board not prepared! Cannot start recording.")
                 return
 
-            self.board_shim.start_stream(450000,"")
+            self.board_shim.start_stream(15000,"")
             self.timer.start(self.update_speed_ms)  # Start update timer
             self.recording_start_time = QtCore.QTime.currentTime()
+            start_time_str = self.recording_start_time.toString("hh:mm:ss.zzz")
+            logging.info(f"Recording started at {start_time_str}.")
 
-            logging.info("Recording started.")
         except Exception as e:
             logging.error(f"Failed to start recording: {e}")
 
@@ -160,11 +168,9 @@ class Graph:
 
         for i in range(len(self.exg_channels)):
             p = ts_widget.addPlot(row=i, col=0)
-
             # Always show Y-axis (EEG amplitude)
             p.showAxis('left', True)
             p.setMenuEnabled('left', False)
-
             # Only show X-axis (time) on the last/bottom plot
             if i == len(self.exg_channels) - 1:
                 p.showAxis('bottom', True)
@@ -175,14 +181,10 @@ class Graph:
 
             if i == 0:
                 p.setTitle('Time Series')
-
             p.setLabel('left', f'{i + 1}')
-
             p.setXRange(-self.window_size, 0)
             p.enableAutoRange('y', True)
-
             self.plots.append(p)
-
             color = self.colors[i % len(self.colors)]
             curve = p.plot(pen=color)
             self.curves.append(curve)
@@ -246,6 +248,7 @@ class Graph:
 
         elapsed = self.recording_start_time.msecsTo(QtCore.QTime.currentTime()) / 1000.0
         logging.info(f"Trigger placed at {elapsed:.2f} seconds since start.")
+        
 
         # Add vertical lines on time-series plots immediately
         for plot in self.plots:
@@ -253,42 +256,95 @@ class Graph:
             plot.addItem(line)
             self.trigger_lines.append(line)
 
-        self.trigger_times.append(elapsed)
-
+        # original
+        #self.trigger_times.append(elapsed)
         #  Schedule ERP extraction ~1 second later
+        #QtCore.QTimer.singleShot(2000, lambda: self._extract_epoch(elapsed))
+        
+
+        ## testing  
+        #elapsed  = self.board_shim.get_board_data_count()
+        #QtCore.QTimer.singleShot(2000, lambda: self._extract_epoch(elapsed))
+        #logging.info(f"trigger sample offset set at {elapsed:.2f} samples.")
+
+        #data = self.board_shim.get_current_board_data()
+        #timestamp_channel = BoardShim.get_timestamp_channel(self.board_id)
+        #timestamps = data[timestamp_channel]
+        #logging.info(f"timestamp extracted at {timestamps:.2f} time.")
+
+        self.trigger_times.append(elapsed)
+        # Extract ERP 2 seconds later
         QtCore.QTimer.singleShot(2000, lambda: self._extract_epoch(elapsed))
 
-    def _extract_epoch(self, elapsed):
-        pre_samples = int(0.5 * self.sampling_rate)
-        post_samples = int(1.0 * self.sampling_rate)
-        epoch_length = pre_samples + post_samples
 
-        data_count = self.board_shim.get_board_data_count()
-        full_data = self.board_shim.get_current_board_data(data_count)
+    def _extract_epoch(self, trigger_time):
 
-        trig_sample_idx = int(elapsed * self.sampling_rate)
-        start_idx = trig_sample_idx - pre_samples
-        end_idx = trig_sample_idx + post_samples
+        # new test code 
+        pre = int(0.5 * self.sampling_rate)
+        post = int(1.0 * self.sampling_rate)
+        epoch_len = pre + post
 
-        buffer_samples = full_data.shape[1]
+        # Get most recent EEG data
+        # data = self.board_shim.get_current_board_data(self.max_buffer_size)
+        # eeg = data[self.exg_channels]
 
-        if start_idx < 0 or end_idx > buffer_samples:
-            logging.warning(f"Trigger at {elapsed:.2f}s is out of bounds for ERP window: "
-                            f"requested start_idx={start_idx}, end_idx={end_idx}, "
-                            f"but buffer contains 0 to {buffer_samples - 1} samples.")
+        eeg = self.eeg_ring_buffer.copy()
+        timestamps = self.sample_timestamps.copy()
+        valid_mask = ~np.isnan(timestamps)
+        valid_times = timestamps[valid_mask]
+        eeg = eeg[:, valid_mask]
+
+        if eeg.shape[1] != valid_times.shape[0]:
+            logging.error("Mismatch between EEG and timestamp buffer. Skipping epoch.")
             return
 
-        # Extract data: channels x epoch_length
-        epoch = full_data[np.ix_(self.exg_channels, range(start_idx, end_idx))]
 
-        # Baseline correction
-        baseline = np.mean(epoch[:, :pre_samples], axis=1, keepdims=True)
+        closest_idx = np.argmin(np.abs(valid_times - trigger_time))
+
+        start_idx = closest_idx - pre
+        end_idx = closest_idx + post
+
+        if start_idx < 0 or end_idx > valid_times.shape[0]:
+            logging.warning("Trigger too close to start or end of buffer.")
+            return
+
+        epoch = eeg[:, start_idx:end_idx]
+        baseline = np.mean(epoch[:, :pre], axis=1, keepdims=True)
         epoch -= baseline
-
         self.epochs.append(epoch)
+        self._update_evoked_response(np.mean(np.stack(self.epochs), axis=0), epoch_len)
 
-        # Compute running average and update ERP plot
-        self._update_evoked_response(np.mean(np.stack(self.epochs), axis=0), epoch_length)
+
+        # pre_samples = int(0.5 * self.sampling_rate)
+        # post_samples = int(1.0 * self.sampling_rate)
+        # epoch_length = pre_samples + post_samples
+
+        # data_count = self.board_shim.get_board_data_count()
+        # full_data = self.board_shim.get_current_board_data(data_count)
+
+        # trig_sample_idx = int(elapsed * self.sampling_rate)
+        # start_idx = trig_sample_idx - pre_samples
+        # end_idx = trig_sample_idx + post_samples
+
+        # buffer_samples = full_data.shape[1]
+
+        # if start_idx < 0 or end_idx > buffer_samples:
+        #     logging.warning(f"Trigger at {elapsed:.2f}s is out of bounds for ERP window: "
+        #                     f"requested start_idx={start_idx}, end_idx={end_idx}, "
+        #                     f"but buffer contains 0 to {buffer_samples - 1} samples.")
+        #     return
+
+        # # Extract data: channels x epoch_length
+        # epoch = full_data[np.ix_(self.exg_channels, range(start_idx, end_idx))]
+
+        # # Baseline correction
+        # baseline = np.mean(epoch[:, :pre_samples], axis=1, keepdims=True)
+        # epoch -= baseline
+
+        # self.epochs.append(epoch)
+
+        # # Compute running average and update ERP plot
+        # self._update_evoked_response(np.mean(np.stack(self.epochs), axis=0), epoch_length)
 
         
 
@@ -324,7 +380,8 @@ class Graph:
         logging.info("Cleared evoked response plot and reset epochs.")
 
     def update(self):
-        data = self.board_shim.get_current_board_data(self.num_points)
+        data = self.board_shim.get_current_board_data(self.max_buffer_size)
+
         available_samples = data.shape[1]
 
         if available_samples < 2:  # Sanity check: no data at all yet
@@ -341,6 +398,30 @@ class Graph:
         # Build time vector spanning -window_size to 0 with correct length
         #time_vector = np.linspace(-self.window_size, 0, num_points_to_use)
         elapsed = self.recording_start_time.msecsTo(QtCore.QTime.currentTime()) / 1000.0
+
+        # Generate timestamps for each sample (assumes uniform spacing)
+        start_time = elapsed - (available_samples / self.sampling_rate)
+        new_timestamps = np.linspace(start_time, elapsed, available_samples)
+
+        # # Insert into rolling timestamp buffer
+        # for i in range(available_samples):
+        #     idx = (self.global_sample_count + i) % self.max_buffer_size
+        #     self.sample_timestamps[idx] = new_timestamps[i]
+
+        for i in range(data.shape[1]):
+            ring_idx = (self.global_sample_count + i) % self.max_buffer_size
+            for ch_idx, ch in enumerate(self.exg_channels):
+                self.eeg_ring_buffer[ch_idx, ring_idx] = data[ch, i]
+
+            # old code   
+            idx = (self.global_sample_count + i) % self.max_buffer_size
+            self.sample_timestamps[idx] = new_timestamps[i]
+        
+
+
+        self.global_sample_count += available_samples
+
+
         start_time_for_window = max(0, elapsed - self.window_size)
         time_vector = np.linspace(start_time_for_window, elapsed, num_points_to_use)
 
