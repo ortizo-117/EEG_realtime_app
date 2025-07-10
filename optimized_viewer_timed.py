@@ -9,7 +9,9 @@ from pyqtgraph.dockarea import DockArea, Dock
 from scipy.signal import welch
 import time 
 import mne
-from mne_bids import write_derivative, BIDSPath
+#from mne_bids import BIDSPath
+import os
+import json
 
 # timing fx
 import matplotlib.pyplot as plt
@@ -139,44 +141,103 @@ class Graph:
         if not self.epochs:
             logging.warning("No EPs found. EPs file is not being saved.")
         else:
-            # Stack epochs → shape: (n_epochs, n_channels, n_times)
+            # Stack and shape epochs
             epochs_array = np.stack(self.epochs)
             n_epochs, n_channels, n_times = epochs_array.shape
 
-            # Create MNE Info
+            # Info and dummy events
             sfreq = self.sampling_rate
             ch_names = [f'EEG {i+1}' for i in range(n_channels)]
             info = mne.create_info(ch_names=ch_names, sfreq=sfreq, ch_types='eeg')
 
-            # Dummy events: each epoch spaced 1s apart
             events = np.column_stack((
                 np.arange(n_epochs) * int(sfreq),
                 np.zeros(n_epochs, dtype=int),
-                np.ones(n_epochs, dtype=int)  # all epochs have event_id 1
+                np.ones(n_epochs, dtype=int)
             ))
 
-            # Create Epochs object
             epochs = mne.EpochsArray(epochs_array, info, events=events, event_id={'stim': 1})
-            
-            # Define BIDS path to your raw data (assumes you saved raw earlier) but probably wont 
 
+            # Paths
             bids_root = "./bids_dataset"
-            raw_bids_path = BIDSPath(subject='01', session='01', task='task', run='01', root=bids_root)
+            deriv_root = os.path.join(bids_root, "derivatives", "erp_pipeline", "sub-01", "ses-01", "eeg")
+            os.makedirs(deriv_root, exist_ok=True)
 
-            # Define derivative path
-            deriv_path = BIDSPath(
-                subject='01',
-                session='01',
-                task='task',
-                run='01',
-                datatype='eeg',
-                root=bids_root / "derivatives" / "your_pipeline",  # you can change 'your_pipeline'
-                check=False  # skip checking the actual raw exists
-            )
+            # Filename according to BIDS derivatives convention
+            deriv_file = "sub-01_ses-01_task-task_run-01_desc-epo_eeg.fif"
+            save_path = os.path.join(deriv_root, deriv_file)
 
-            # Save epochs as derivative
-            write_derivative(epochs, deriv_path, raw_bids_path=raw_bids_path, overwrite=True)
-            print("✅ Epoched EEG saved to BIDS derivatives.")
+            # Save it
+            epochs.save(save_path, overwrite=True)
+            print(f"✅ Saved epoched EEG to: {save_path}")
+
+            # Optionally write dataset_description.json for BIDS derivative
+            desc_path = os.path.join(bids_root, "derivatives", "erp_pipeline", "dataset_description.json")
+            if not os.path.exists(desc_path):
+                desc_json = {
+                    "Name": "ERP Pipeline",
+                    "BIDSVersion": "1.8.0",
+                    "PipelineDescription": {
+                        "Name": "EEG Epoch Extraction",
+                        "Version": "1.0"
+                    }
+                }
+                with open(desc_path, "w") as f:
+                    json.dump(desc_json, f, indent=4)
+                print(f"📝 Created: {desc_path}")
+
+
+
+
+
+
+
+
+            # # Stack epochs → shape: (n_epochs, n_channels, n_times)
+            # epochs_array = np.stack(self.epochs)
+            # n_epochs, n_channels, n_times = epochs_array.shape
+
+            # # Create MNE Info
+            # sfreq = self.sampling_rate
+            # ch_names = [f'EEG {i+1}' for i in range(n_channels)]
+            # info = mne.create_info(ch_names=ch_names, sfreq=sfreq, ch_types='eeg')
+
+            # # Dummy events: each epoch spaced 1s apart
+            # events = np.column_stack((
+            #     np.arange(n_epochs) * int(sfreq),
+            #     np.zeros(n_epochs, dtype=int),
+            #     np.ones(n_epochs, dtype=int)  # all epochs have event_id 1
+            # ))
+
+            # # Create Epochs object
+            # epochs = mne.EpochsArray(epochs_array, info, events=events, event_id={'stim': 1})
+
+            # # Define BIDS path to your raw data (assumes you saved raw earlier) but probably wont 
+
+            # bids_root = "./bids_dataset"
+            # deriv_root = os.path.join(bids_root, "derivatives", "erp_pipeline")
+            
+
+            # # Define derivative path
+            # deriv_path = BIDSPath(
+            #     subject='01',
+            #     session='01',
+            #     task='task',
+            #     run='01',
+            #     datatype='eeg',
+            #     root=deriv_root,
+            #     suffix='epo',
+            #     extension='.fif',
+            #     check = False
+            # )
+
+            # os.makedirs(deriv_path, exist_ok=True)
+
+
+            # print('We here')
+            # # Save epochs as derivative
+            # epochs.save(deriv_path.fpath, overwrite=True)
+            # print("✅ Epoched EEG saved to BIDS derivatives.")
 
 
                         
