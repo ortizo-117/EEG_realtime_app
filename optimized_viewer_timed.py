@@ -8,7 +8,8 @@ from pyqtgraph.Qt import QtWidgets, QtCore
 from pyqtgraph.dockarea import DockArea, Dock
 from scipy.signal import welch
 import time 
-
+import mne
+from mne_bids import write_derivative, BIDSPath
 
 # timing fx
 import matplotlib.pyplot as plt
@@ -128,9 +129,59 @@ class Graph:
             for line in self.trigger_lines:
                 for plot in self.plots:
                     plot.removeItem(line)
+            self.save_erp()
             self.epochs.clear()
             self.trigger_times.clear()
             self.plot_timing_stats()
+            
+
+    def save_erp(self):
+        if not self.epochs:
+            logging.warning("No EPs found. EPs file is not being saved.")
+        else:
+            # Stack epochs → shape: (n_epochs, n_channels, n_times)
+            epochs_array = np.stack(self.epochs)
+            n_epochs, n_channels, n_times = epochs_array.shape
+
+            # Create MNE Info
+            sfreq = self.sampling_rate
+            ch_names = [f'EEG {i+1}' for i in range(n_channels)]
+            info = mne.create_info(ch_names=ch_names, sfreq=sfreq, ch_types='eeg')
+
+            # Dummy events: each epoch spaced 1s apart
+            events = np.column_stack((
+                np.arange(n_epochs) * int(sfreq),
+                np.zeros(n_epochs, dtype=int),
+                np.ones(n_epochs, dtype=int)  # all epochs have event_id 1
+            ))
+
+            # Create Epochs object
+            epochs = mne.EpochsArray(epochs_array, info, events=events, event_id={'stim': 1})
+            
+            # Define BIDS path to your raw data (assumes you saved raw earlier) but probably wont 
+
+            bids_root = "./bids_dataset"
+            raw_bids_path = BIDSPath(subject='01', session='01', task='task', run='01', root=bids_root)
+
+            # Define derivative path
+            deriv_path = BIDSPath(
+                subject='01',
+                session='01',
+                task='task',
+                run='01',
+                datatype='eeg',
+                root=bids_root / "derivatives" / "your_pipeline",  # you can change 'your_pipeline'
+                check=False  # skip checking the actual raw exists
+            )
+
+            # Save epochs as derivative
+            write_derivative(epochs, deriv_path, raw_bids_path=raw_bids_path, overwrite=True)
+            print("✅ Epoched EEG saved to BIDS derivatives.")
+
+
+                        
+
+
 
     def _init_timeseries(self):
         self.plots = []
@@ -271,6 +322,7 @@ class Graph:
             idx = (self.global_sample_count + i) % self.max_buffer_size
             self.sample_timestamps[idx] = new_timestamps[i]
             self.eeg_ring_buffer[:, idx] = data[self.exg_channels, i]
+
         t2 = time.perf_counter()
 
         self.global_sample_count += available_samples
