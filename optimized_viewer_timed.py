@@ -22,6 +22,7 @@ class Graph:
         self.board_id = board_shim.get_board_id()
         self.board_shim = board_shim
         self.exg_channels = BoardShim.get_exg_channels(self.board_id)
+        self.digital_channel_index = 13 # this is D12 digital input trigger
         self.sampling_rate = BoardShim.get_sampling_rate(self.board_id)
         self.update_speed_ms = 50
         self.erp_update_ms = 1000
@@ -240,10 +241,6 @@ class Graph:
             # print("✅ Epoched EEG saved to BIDS derivatives.")
 
 
-                        
-
-
-
     def _init_timeseries(self):
         self.plots = []
         self.curves = []
@@ -444,6 +441,7 @@ class Graph:
                 signal = self._preprocess_signal(data[channel, -num_points_to_use:])
                 self.curves[count].setData(time_vector, signal.tolist())
             t3 = time.perf_counter()
+
 
             for p in self.plots:
                 p.setXRange(start_time_for_window, elapsed + 0.1, padding=0)
